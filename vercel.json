@@ -12,8 +12,13 @@
       "dest": "/api/webhook.py"
     },
     {
-      "src": "/api/health",
+      "src": "/(.*)",
       "dest": "/api/webhook.py"
     }
-  ]
+  ],
+  "functions": {
+    "api/webhook.py": {
+      "runtime": "python3.9"
+    }
+  }
 }
