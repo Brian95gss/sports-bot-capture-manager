@@ -1,18 +1,19 @@
 {
   "version": 2,
-  "functions": {
-    "api/webhook.py": {
-      "runtime": "@vercel/python"
+  "builds": [
+    {
+      "src": "api/webhook.py",
+      "use": "@vercel/python"
     }
-  },
+  ],
   "routes": [
     {
-      "src": "/api/(.*)",
-      "dest": "/api/$1"
+      "src": "/api/webhook",
+      "dest": "/api/webhook.py"
     },
     {
-      "src": "/(.*)",
-      "dest": "/api/webhook"
+      "src": "/api/health",
+      "dest": "/api/webhook.py"
     }
   ]
 }
