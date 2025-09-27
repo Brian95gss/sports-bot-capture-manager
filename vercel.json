@@ -1,20 +1,18 @@
 {
   "version": 2,
   "functions": {
-    "api/**/*.py": {
-      "runtime": "@vercel/python",
-      "maxDuration": 60
+    "api/webhook.py": {
+      "runtime": "@vercel/python"
     }
   },
   "routes": [
     {
       "src": "/api/(.*)",
       "dest": "/api/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/webhook"
     }
-  ],
-  "build": {
-    "env": {
-      "PYTHON_VERSION": "3.11"
-    }
-  }
+  ]
 }
