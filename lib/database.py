@@ -39,7 +39,13 @@ class Database:
     async def get_current_batch(self, chat_id: int) -> Optional[Dict]:
         """Obtiene lote actual del usuario"""
         try:
-            result = self.supabase.table('capture_batches').select('*').eq('chat_id', chat_id).eq('sent_to_bot2', False).order('created_at', desc=True).limit(1).execute()
+            result = self.supabase.table('capture_batches')\
+                .select('*')\
+                .eq('chat_id', chat_id)\
+                .eq('sent_to_bot2', False)\
+                .order('created_at', desc=True)\
+                .limit(1)\
+                .execute()
             
             return result.data[0] if result.data else None
             
@@ -134,4 +140,3 @@ class Database:
         except Exception as e:
             print(f"Error clearing current batch: {e}")
             raise e
-Commit message: Add database client
