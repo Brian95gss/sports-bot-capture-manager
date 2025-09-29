@@ -4,9 +4,13 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 import aiohttp
 import sys
-sys.path.append('lib')
+from pathlib import Path
 
-# Importar tus módulos
+# Agregar el directorio raíz al path para imports
+root_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(root_dir))
+
+# Importar módulos
 from lib.database import Database
 from lib.image_processor import ImageProcessor
 from lib.telegram_client import TelegramClient
