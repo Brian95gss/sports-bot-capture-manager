@@ -1,234 +1,148 @@
-# Bot 1: Capture Manager - Webhook Principal para Vercel
 import os
 import asyncio
-from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+import aiohttp
 
-# Crear app FastAPI
-app = FastAPI(title="Sports Betting Bot - Capture Manager", version="1.0.0")
+app = FastAPI(title="Sports Capture Manager Bot")
 
 # Variables de entorno
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY')
-AUTHORIZED_USER_ID = os.getenv('AUTHORIZED_USER_ID')
-BOT2_WEBHOOK_URL = os.getenv('BOT2_WEBHOOK_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_ANON_KEY')
+AUTHORIZED_USER_ID = int(os.getenv('AUTHORIZED_USER_ID', '0'))
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # https://tu-app.onrender.com
 
-# Función simple de validación de usuario
-def is_authorized_user(update: dict) -> bool:
+# Variables globales para estado
+current_match = {}
+current_batch = []
+
+def is_authorized(update: dict) -> bool:
     """Verifica si el usuario está autorizado"""
     try:
-        if not AUTHORIZED_USER_ID:
-            return False
-            
-        authorized_id = int(AUTHORIZED_USER_ID)
-        
         if 'message' in update:
             user_id = update['message']['from']['id']
         elif 'callback_query' in update:
             user_id = update['callback_query']['from']['id']
         else:
             return False
-            
-        return user_id == authorized_id
+        return user_id == AUTHORIZED_USER_ID
     except:
         return False
 
-# Endpoint principal - CAMBIO CRÍTICO: usar "/" en lugar de "/api/webhook"
-@app.post("/")
-async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Recibe updates de Telegram"""
+@app.on_event("startup")
+async def startup():
+    """Configura el webhook al iniciar"""
+    if BOT_TOKEN and WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+            payload = {"url": webhook_url}
+            async with session.post(url, json=payload) as resp:
+                result = await resp.json()
+                print(f"Webhook configured: {result}")
+
+@app.get("/")
+async def root():
+    """Health check"""
+    return {
+        "status": "running",
+        "bot": "Sports Capture Manager",
+        "webhook": f"{WEBHOOK_URL}/webhook" if WEBHOOK_URL else "not configured"
+    }
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    """Recibe actualizaciones de Telegram"""
     try:
         update = await request.json()
         
-        # Solo procesar si es del usuario autorizado
-        if not is_authorized_user(update):
-            return {"ok": True, "message": "Unauthorized"}
+        if not is_authorized(update):
+            return {"ok": True}
         
-        background_tasks.add_task(process_telegram_update, update)
+        await process_update(update)
         return {"ok": True}
         
     except Exception as e:
         print(f"Webhook error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": str(e)}, status_code=200)
 
-@app.get("/")
-async def health_check():
-    """Health check para GET requests"""
-    return {
-        "status": "healthy",
-        "service": "Capture Manager Bot",
-        "version": "1.0.0",
-        "webhook_configured": bool(TELEGRAM_BOT_TOKEN),
-        "database_configured": bool(SUPABASE_URL and SUPABASE_ANON_KEY)
-    }
-
-async def process_telegram_update(update: dict):
-    """Procesa updates de Telegram"""
+async def process_update(update: dict):
+    """Procesa las actualizaciones"""
     try:
         if 'message' in update:
             message = update['message']
+            chat_id = message['chat']['id']
             
             if 'text' in message:
-                await handle_text_message(message)
-            elif 'photo' in message or 'document' in message:
-                await handle_image_message(message)
+                text = message['text'].strip()
                 
+                if text.startswith('/start'):
+                    await send_message(chat_id, "Bot de captura iniciado. Usa /help para ver comandos.")
+                
+                elif text.startswith('/new_match'):
+                    match_text = text[11:].strip()
+                    if ' vs ' in match_text.lower():
+                        teams = match_text.lower().split(' vs ')
+                        current_match['home'] = teams[0].strip()
+                        current_match['away'] = teams[1].strip()
+                        current_batch.clear()
+                        await send_message(
+                            chat_id,
+                            f"✅ Partido iniciado:\n{current_match['home'].title()} vs {current_match['away'].title()}\n\nAhora envía las capturas."
+                        )
+                    else:
+                        await send_message(chat_id, "Formato: /new_match Equipo1 vs Equipo2")
+                
+                elif text == '/status':
+                    if current_match:
+                        msg = f"📊 Partido actual:\n{current_match.get('home', 'N/A')} vs {current_match.get('away', 'N/A')}\n"
+                        msg += f"Capturas: {len(current_batch)}"
+                        await send_message(chat_id, msg)
+                    else:
+                        await send_message(chat_id, "No hay partido activo. Usa /new_match")
+                
+                elif text == '/clear':
+                    current_match.clear()
+                    current_batch.clear()
+                    await send_message(chat_id, "✅ Lote eliminado")
+                
+                elif text == '/help':
+                    help_text = """🤖 COMANDOS:
+
+/new_match Equipo1 vs Equipo2 - Iniciar partido
+/status - Ver estado actual
+/clear - Limpiar todo
+/help - Esta ayuda
+
+Envía capturas de pantalla después de /new_match"""
+                    await send_message(chat_id, help_text)
+                
+                else:
+                    await send_message(chat_id, "Comando no reconocido. Usa /help")
+            
+            elif 'photo' in message:
+                if current_match:
+                    photo = message['photo'][-1]  # La imagen de mayor calidad
+                    file_id = photo['file_id']
+                    current_batch.append({
+                        'file_id': file_id,
+                        'timestamp': message['date']
+                    })
+                    await send_message(
+                        chat_id,
+                        f"✅ Captura {len(current_batch)} guardada\n\nEnvía más o usa /status"
+                    )
+                else:
+                    await send_message(chat_id, "⚠️ Primero inicia un partido con /new_match")
+                    
     except Exception as e:
         print(f"Error processing update: {e}")
-
-async def handle_text_message(message: dict):
-    """Maneja mensajes de texto"""
-    chat_id = message['chat']['id']
-    text = message['text'].strip()
-    
-    if text.lower().startswith('/new_match'):
-        await start_new_match(chat_id, text)
-    
-    elif text.lower() == '/process':
-        await process_current_batch(chat_id)
-    
-    elif text.lower() == '/verify':
-        await show_extracted_data(chat_id)
-    
-    elif text.lower() == '/send':
-        await send_to_bot2(chat_id)
-    
-    elif text.lower() == '/clear':
-        await clear_current_batch(chat_id)
-    
-    elif text.lower() == '/status':
-        await show_batch_status(chat_id)
-    
-    else:
-        await show_help(chat_id)
-
-async def handle_image_message(message: dict):
-    """Maneja imágenes subidas"""
-    chat_id = message['chat']['id']
-    
-    # Por ahora, respuesta simple para confirmar que funciona
-    await send_message(
-        chat_id,
-        "Imagen recibida. Funcionalidad de OCR en desarrollo."
-    )
-
-async def start_new_match(chat_id: int, text: str):
-    """Inicia nuevo partido para captura de cuotas"""
-    try:
-        # Extraer nombres de equipos: "/new_match Atlético Madrid vs Real Madrid"
-        match_text = text[11:].strip()  # Remover "/new_match "
-        
-        if not match_text:
-            await send_message(
-                chat_id,
-                "Falta especificar el partido.\nEjemplo: /new_match Atlético Madrid vs Real Madrid"
-            )
-            return
-        
-        # Parse básico del partido
-        if ' vs ' in match_text.lower():
-            teams = match_text.split(' vs ')
-            if len(teams) == 2:
-                home_team = teams[0].strip()
-                away_team = teams[1].strip()
-                
-                response = f"""
-NUEVO PARTIDO INICIADO
-
-{home_team} vs {away_team}
-
-Sistema de captura inicializado.
-Ahora puedes subir capturas de cuotas.
-
-Estado: Listo para recibir imágenes
-                """.strip()
-                
-                await send_message(chat_id, response)
-            else:
-                await send_message(
-                    chat_id,
-                    "Formato incorrecto. Usa: /new_match Equipo Local vs Equipo Visitante"
-                )
-        else:
-            await send_message(
-                chat_id,
-                "Formato incorrecto. Usa: /new_match Equipo Local vs Equipo Visitante"
-            )
-        
-    except Exception as e:
-        await send_message(
-            chat_id,
-            f"Error iniciando partido: {str(e)}"
-        )
-
-async def process_current_batch(chat_id: int):
-    """Procesa todas las imágenes del lote actual con OCR"""
-    await send_message(
-        chat_id,
-        "Procesamiento de OCR iniciado...\nFuncionalidad completa en desarrollo."
-    )
-
-async def show_extracted_data(chat_id: int):
-    """Muestra datos extraídos detalladamente"""
-    await send_message(
-        chat_id,
-        "DATOS EXTRAÍDOS\n\nFuncionalidad de verificación en desarrollo.\nOCR será implementado próximamente."
-    )
-
-async def send_to_bot2(chat_id: int):
-    """Envía datos procesados al Bot 2"""
-    await send_message(
-        chat_id,
-        "Función de envío al Bot 2 en desarrollo.\nConexión con sistema de predicciones próximamente."
-    )
-
-async def clear_current_batch(chat_id: int):
-    """Limpia el lote actual"""
-    await send_message(
-        chat_id,
-        "Lote actual eliminado.\nUsa /new_match para empezar uno nuevo."
-    )
-
-async def show_batch_status(chat_id: int):
-    """Muestra estado del lote actual"""
-    await send_message(
-        chat_id,
-        "ESTADO ACTUAL\n\nSistema funcionando correctamente.\nFuncionalidades de base de datos en desarrollo."
-    )
-
-async def show_help(chat_id: int):
-    """Muestra comandos disponibles"""
-    help_text = """
-COMANDOS DISPONIBLES:
-
-/new_match Equipo1 vs Equipo2 - Iniciar nuevo partido
-/process - Procesar capturas con OCR (en desarrollo)
-/verify - Ver datos extraídos (en desarrollo)  
-/send - Enviar al bot de predicciones (en desarrollo)
-/clear - Limpiar lote actual
-/status - Ver estado actual
-
-EJEMPLO DE USO:
-1. /new_match Real Madrid vs Barcelona
-2. Subir capturas de cuotas (funcionalidad básica)
-3. /process (cuando esté disponible)
-
-ESTADO: Bot desplegado y funcionando
-    """.strip()
-    
-    await send_message(chat_id, help_text)
 
 async def send_message(chat_id: int, text: str):
     """Envía mensaje a Telegram"""
     try:
-        if not TELEGRAM_BOT_TOKEN:
-            print("No TELEGRAM_BOT_TOKEN configured")
-            return
-            
-        import aiohttp
-        
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": chat_id,
             "text": text,
@@ -237,13 +151,11 @@ async def send_message(chat_id: int, text: str):
         
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as response:
-                if response.status == 200:
-                    print(f"Message sent to {chat_id}")
-                else:
+                if response.status != 200:
                     print(f"Error sending message: {response.status}")
                     
     except Exception as e:
         print(f"Error in send_message: {e}")
 
-# Para Vercel - exportar la app
+# Para Render
 handler = app
